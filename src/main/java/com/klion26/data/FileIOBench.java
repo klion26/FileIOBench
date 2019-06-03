@@ -44,6 +44,7 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.openjdk.jmh.annotations.Mode.Throughput;
@@ -61,8 +62,10 @@ import static org.openjdk.jmh.annotations.Scope.Thread;
 @Warmup(iterations = 10)
 @Measurement(iterations = 10)
 public class FileIOBench {
-	private static final String FILE_NAME = "tmp";
-	private static final int FILE_LEN = 1024;
+	private static final String SYNC_FILE_NAME = "sync_tmp";
+	private static final String ASYNC_FILE_NAME = "async_tmp";
+	private static final int FILE_LEN = 5 * 1024 * 1024; // 5M
+	private static final int BUFFER_SIZE = 32 * 1024; // 32K
 	private FileChannel fileChannel;
 	private AsynchronousFileChannel asyncFileChannel;
 
@@ -70,17 +73,25 @@ public class FileIOBench {
 
 	@Setup
 	public void setUp() throws IOException {
-		FileWriter writer = new FileWriter(FILE_NAME);
+		FileWriter writer = new FileWriter(SYNC_FILE_NAME);
 		for (int i = 0; i < FILE_LEN; ++i) {
-			writer.write('a');
+			// 'A' - 'z'
+			writer.write('A' + ThreadLocalRandom.current().nextInt(58));
 		}
 		writer.flush();
 		writer.close();
 
-		fileChannel = new RandomAccessFile(FILE_NAME, "r").getChannel();
-		asyncFileChannel = AsynchronousFileChannel.open(Paths.get(FILE_NAME), StandardOpenOption.READ);
+		writer = new FileWriter(ASYNC_FILE_NAME);
+		for (int i = 0; i < FILE_LEN; ++i) {
+			writer.write('A' + ThreadLocalRandom.current().nextInt(58));
+		}
+		writer.flush();
+		writer.close();
 
-		byteBuffer = ByteBuffer.allocateDirect(FILE_LEN + 5);
+		fileChannel = new RandomAccessFile(SYNC_FILE_NAME, "r").getChannel();
+		asyncFileChannel = AsynchronousFileChannel.open(Paths.get(ASYNC_FILE_NAME), StandardOpenOption.READ);
+
+		byteBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE + 5);
 	}
 
 	@TearDown
@@ -89,7 +100,8 @@ public class FileIOBench {
 		fileChannel.close();
 		asyncFileChannel.close();
 
-		new File(FILE_NAME).delete();
+		new File(SYNC_FILE_NAME).delete();
+		new File(ASYNC_FILE_NAME).delete();
 	}
 
 	@Benchmark
@@ -97,7 +109,7 @@ public class FileIOBench {
 		fileChannel.position(0);
 		byteBuffer.position(0);
 
-		int left = FILE_LEN;
+		int left = BUFFER_SIZE;
 		while (true) {
 			// We know there exist enough contents in the file, and never return -1.
 			left -= fileChannel.read(byteBuffer);
@@ -112,7 +124,7 @@ public class FileIOBench {
 	public void testAsyncIO(Blackhole bh) throws ExecutionException, InterruptedException, IOException {
 		byteBuffer.position(0);
 		Future<Integer> future = asyncFileChannel.read(byteBuffer, 0);
-		int left = FILE_LEN;
+		int left = BUFFER_SIZE;
 		int read;
 		while (true) {
 			read = future.get();
