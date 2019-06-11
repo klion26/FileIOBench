@@ -29,7 +29,6 @@ import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
-import org.apache.flink.runtime.io.network.partition.consumer.BufferOrEvent;
 
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
@@ -78,6 +77,7 @@ public class ConsumerBench {
 	private static int pageSize = 32 * 1024; // 32K
 
 	private static int HEADER_LENGTH = 9;
+	private byte[] bytes = new byte[pageSize + 10];
 
 	@Setup
 	public void setUp() throws IOException {
@@ -124,6 +124,45 @@ public class ConsumerBench {
 	@TearDown
 	public void tearDown() {
 		buffer.clear();
+	}
+
+	@Benchmark
+	public void testBufferWithWrap(Blackhole bh) throws IOException {
+		buffer.position(0);
+		final int channel = buffer.getInt();
+		final int length = buffer.getInt();
+		final boolean isBuffer = buffer.get() == 0;
+
+		// deserialize buffer
+		if (length > pageSize) {
+			throw new IOException(String.format("Spilled buffer (%d bytes) is larger than page size of (%d bytes)",
+					length,
+					pageSize));
+		}
+
+		MemorySegment seg = MemorySegmentFactory.wrap(bytes);
+		int segPos = 0;
+		int bytesRemaining = length;
+
+		while (true) {
+			int toCopy = Math.min(buffer.remaining(), bytesRemaining);
+			if (toCopy > 0) {
+				seg.put(segPos, buffer, toCopy);
+				segPos += toCopy;
+				bytesRemaining -= toCopy;
+			}
+
+			if (bytesRemaining == 0) {
+				break;
+			}
+		}
+
+		Buffer buf = new NetworkBuffer(seg, FreeingBufferRecycler.INSTANCE);
+		buf.setSize(length);
+
+		bh.consume(isBuffer);
+		bh.consume(channel);
+		bh.consume(buf);
 	}
 
 	@Benchmark
